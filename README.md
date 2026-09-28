@@ -28,8 +28,41 @@ BASE_URL="https://yoursite.gov" python crawler.py
 python serve.py   # optional, to view the report locally
 ```
 
+## Docker
+
+Crawler-only image (`python:3.12-slim`, non-root user, ~174 MB). No site is baked in:
+the target comes from environment variables, so EventBridge/ECS can run one task per
+site by overriding them per target.
+
+```bash
+docker build -t broken-link-crawler .
+docker run --rm \
+  -e BASE_URL="https://bravent.us/" -e MAX_PAGES=30 -e MAX_DEPTH=2 \
+  -e SCAN_LABEL="bravent" \
+  -v "$PWD/out:/output" \
+  broken-link-crawler
+```
+
+- **Per-site config (set by the ECS task/EventBridge override):** `BASE_URL`,
+  `SCAN_LABEL`, plus optional `MAX_PAGES`, `MAX_DEPTH`, `CONCURRENCY`, `TIMEOUT`,
+  `POLITE_DELAY`, `RESPECT_ROBOTS`, `IGNORE_PATHS`, `CHECK_IMAGES`, `CHECK_LINKS`.
+  Defaults are in the `CONFIG` block of `crawler.py`.
+- **Output:** everything is written to `OUTPUT_DIR` (`/output` in the image):
+  `broken_links_<ts>_<label>.csv/.xlsx`, `report_<ts>_<label>.html`,
+  `report_data_<ts>_<label>.json`, plus `index.html` (always the latest run, fixed
+  name), `skipped_urls.html`, and `live_results.jsonl` / `live_status.json`.
+  Two sites running at once must not share one `/output` (the fixed `index.html`
+  and live files would collide): give each task its own volume/path, or set
+  `OUTPUT_DIR` per site (e.g. `/output/bravent`).
+- **Logs:** stdout/stderr, unbuffered, so they stream to CloudWatch Logs as-is.
+- **Exit code:** the crawler exits 0 even when the site is unreachable (it still
+  writes a report), so ECS shows that task as successful. Don't rely on the exit
+  code alone to detect a failed run.
+- No report upload step yet; storing `/output` (S3/EFS) is handled on the AWS side.
+
 ## Status
 
 In progress: containerizing for a monthly ECS Fargate run (EventBridge
 Scheduler trigger, GitHub Actions for manual runs), plus a Google Drive
 upload step for the generated report that does not exist in `crawler.py` yet.
+The Docker image builds and a local test crawl of https://bravent.us/ passes.
