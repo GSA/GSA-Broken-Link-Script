@@ -58,11 +58,26 @@ docker run --rm \
 - **Exit code:** the crawler exits 0 even when the site is unreachable (it still
   writes a report), so ECS shows that task as successful. Don't rely on the exit
   code alone to detect a failed run.
-- No report upload step yet; storing `/output` (S3/EFS) is handled on the AWS side.
+- **Upload:** with `REPORT_BUCKET` set, every file in `OUTPUT_DIR` is uploaded to
+  `s3://$REPORT_BUCKET/<SCAN_LABEL>/<timestamp>/` after the reports are written.
+  Unset for local runs. A failed upload fails the task.
+
+## AWS
+
+The ECS cluster, task definition, IAM roles, reports bucket and monthly
+EventBridge Scheduler schedules (one per site, 1st of the month) live in
+[GSA/fcp-ogp-infra](https://github.com/GSA/fcp-ogp-infra) under
+`environments/apps/broken-link-crawler`. Crawl pacing (`TIMEOUT`,
+`CONCURRENCY`, `POLITE_DELAY`, …) and the site list are set there too.
+
+**Actions → Build, Push and Run Crawler** runs the tests, then pushes the
+image to ECR as `:<tag>` and `:latest`. Scheduled tasks always pull `:latest`,
+so the next monthly run picks up the new image. Tick `run_now` with a `base_url` to
+start a crawl straight away. The workflow needs `AWS_ACCESS_KEY_ID_DEV` /
+`AWS_SECRET_ACCESS_KEY_DEV` repository secrets.
 
 ## Status
 
-In progress: containerizing for a monthly ECS Fargate run (EventBridge
-Scheduler trigger, GitHub Actions for manual runs), plus a Google Drive
-upload step for the generated report that does not exist in `crawler.py` yet.
-The Docker image builds and a local test crawl of https://bravent.us/ passes.
+Being moved to a monthly ECS Fargate run in dev, with reports in S3. Still to
+do: Google Drive upload, a separate tab for bot-blocked links (401/403/429),
+and failure alerting.
