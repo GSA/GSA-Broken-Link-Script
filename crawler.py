@@ -179,6 +179,12 @@ CONFIG: dict = {
 
     # --- Labels / metadata ---
     "SCAN_LABEL": os.getenv("SCAN_LABEL", ""),
+
+    # --- Report upload ---
+    # When set, every file in OUTPUT_DIR is uploaded to
+    # s3://REPORT_BUCKET/<label>/<timestamp>/ after the reports are written.
+    # Unset (the default) for local runs.
+    "REPORT_BUCKET": os.getenv("REPORT_BUCKET", ""),
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -2724,6 +2730,20 @@ def _row_class(status) -> str:
     return "unkn"
 
 
+def upload_reports(output_dir: Path, bucket: str, prefix: str, s3=None) -> list[str]:
+    """Upload every file in output_dir to s3://bucket/prefix/ and return the keys."""
+    if s3 is None:
+        import boto3
+        s3 = boto3.client("s3")
+    keys = []
+    for path in sorted(p for p in output_dir.rglob("*") if p.is_file()):
+        key = f"{prefix}/{path.relative_to(output_dir).as_posix()}"
+        s3.upload_file(str(path), bucket, key)
+        keys.append(key)
+    log.info("Uploaded %d file(s) → s3://%s/%s/", len(keys), bucket, prefix)
+    return keys
+
+
 async def main() -> None:
     start_time = time.time()
     start_dt   = now_est().strftime("%Y-%m-%d %H:%M:%S")
@@ -2905,6 +2925,9 @@ async def main() -> None:
                 skipped_snapshot, CONFIG["BASE_URL"], run_date, skipped_path
             ))
         log.info("skipped_urls.html written → %s", skipped_path)
+
+    if CONFIG["REPORT_BUCKET"]:
+        upload_reports(output_dir, CONFIG["REPORT_BUCKET"], f"{safe_lbl or 'unlabeled'}/{ts_tag}")
 
     # ── Terminal summary ──
     broken      = sum(1 for r in results if str(r["status"]) in ("404","410","451"))

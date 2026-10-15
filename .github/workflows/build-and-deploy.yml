@@ -1,0 +1,133 @@
+name: Build, Push and Run Crawler
+
+# The task definition, schedules and IAM live in GSA/fcp-ogp-infra
+# (environments/apps/broken-link-crawler). This workflow only publishes the
+# image: it pushes :<image_tag> and moves :latest, which every scheduled task
+# pulls when it starts. Optionally it starts one crawl right away.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - dev
+      image_tag:
+        description: 'ECR image tag (defaults to the short commit SHA)'
+        required: false
+      run_now:
+        description: 'Start a crawl after pushing'
+        type: boolean
+        default: false
+      base_url:
+        description: 'Site to crawl (with run_now)'
+        required: false
+      scan_label:
+        description: 'Report label (with run_now)'
+        required: false
+      no_cache:
+        description: 'Bypass Docker layer cache (use after security fixes)'
+        type: boolean
+        default: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECR_REPO_DEV: 650251692647.dkr.ecr.us-east-1.amazonaws.com/fcp-ogp/broken-link-crawler
+      RUN_TASK_PARAM_DEV: /fcp-ogp/dev/broken-link-crawler/run-task
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+
+    - name: Run tests
+      run: |
+        pip install -r requirements.txt pytest
+        python -m pytest -q
+
+    - name: Resolve environment
+      env:
+        IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+      run: |
+        if [ "${{ github.event.inputs.environment }}" = "dev" ]; then
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID_DEV }}" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}" >> $GITHUB_ENV
+          echo "ECR_REPO=${ECR_REPO_DEV}" >> $GITHUB_ENV
+          echo "RUN_TASK_PARAM=${RUN_TASK_PARAM_DEV}" >> $GITHUB_ENV
+        fi
+        echo "IMAGE_TAG=${IMAGE_TAG:-${GITHUB_SHA::7}}" >> $GITHUB_ENV
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Amazon ECR
+      run: |
+        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        push: true
+        platforms: linux/amd64
+        tags: |
+          ${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
+          ${{ env.ECR_REPO }}:latest
+        cache-from: ${{ github.event.inputs.no_cache == 'true' && '' || 'type=gha' }}
+        cache-to: ${{ github.event.inputs.no_cache == 'true' && '' || 'type=gha,mode=max' }}
+
+    - name: Start a crawl
+      if: github.event.inputs.run_now == 'true'
+      env:
+        BASE_URL: ${{ github.event.inputs.base_url }}
+        SCAN_LABEL: ${{ github.event.inputs.scan_label }}
+      run: |
+        if [ -z "${BASE_URL}" ]; then
+          echo "::error::run_now needs base_url"
+          exit 1
+        fi
+
+        PARAM=$(aws ssm get-parameter --name "${RUN_TASK_PARAM}" --query Parameter.Value --output text)
+        CLUSTER=$(jq -r .cluster <<<"${PARAM}")
+        CONTAINER=$(jq -r .container <<<"${PARAM}")
+
+        OVERRIDES=$(jq -n --arg c "${CONTAINER}" --arg u "${BASE_URL}" --arg l "${SCAN_LABEL}" '{
+          containerOverrides: [{
+            name: $c,
+            environment: [{name: "BASE_URL", value: $u}, {name: "SCAN_LABEL", value: $l}]
+          }]
+        }')
+
+        TASK_ARN=$(aws ecs run-task \
+          --cluster "${CLUSTER}" \
+          --task-definition "$(jq -r .taskDefinition <<<"${PARAM}")" \
+          --launch-type FARGATE \
+          --network-configuration "$(jq -c .networkConfiguration <<<"${PARAM}")" \
+          --overrides "${OVERRIDES}" \
+          --query 'tasks[0].taskArn' --output text)
+
+        if [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
+          echo "::error::run-task did not start a task"
+          exit 1
+        fi
+
+        echo "Started ${TASK_ARN}"
+        echo "Logs: CloudWatch log group /fcp-ogp/${{ github.event.inputs.environment }}/broken-link-crawler, stream crawler/${CONTAINER}/${TASK_ARN##*/}"
