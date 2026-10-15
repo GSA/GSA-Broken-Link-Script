@@ -185,6 +185,14 @@ CONFIG: dict = {
     # s3://REPORT_BUCKET/<label>/<timestamp>/ after the reports are written.
     # Unset (the default) for local runs.
     "REPORT_BUCKET": os.getenv("REPORT_BUCKET", ""),
+
+    # When both are set, the .xlsx is also uploaded to this Google Drive folder
+    # and converted to a native Google Sheet (so cells can be commented on and
+    # people @-tagged). GOOGLE_DRIVE_CREDENTIALS is the service-account key
+    # JSON (ECS injects it from Secrets Manager); an empty value or the "{}"
+    # placeholder means "not configured yet" and the upload is skipped.
+    "GOOGLE_DRIVE_CREDENTIALS": os.getenv("GOOGLE_DRIVE_CREDENTIALS", ""),
+    "GOOGLE_DRIVE_FOLDER_ID":   os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""),
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -290,6 +298,18 @@ def status_category(status) -> str:
     if s.startswith("5"):   return "5xx Server Error"
     if "Timeout" in s:      return "Timeout"
     return "Error"
+
+
+BOT_BLOCK_STATUSES = ("401", "403", "429")
+
+
+def is_bot_blocked(row: dict) -> bool:
+    """External link answered 401/403/429: the target site is refusing a
+    scripted client (Cloudflare/Akamai challenge, rate limit), which says
+    nothing about whether the link works in a browser. Internal 4xx are
+    never counted here, those are the site's own problem."""
+    return (row.get("link_type") == "External"
+            and str(row.get("status", "")) in BOT_BLOCK_STATUSES)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1559,12 +1579,24 @@ def write_excel(
         r for r in link_rows
         if str(r.get("status", "")).startswith("4")
         and r.get("link_type") in ("Internal", "External")
+        and not is_bot_blocked(r)
     ]
     num_bl_sheets = max(1, -(-len(broken_link_rows) // rows_per_sht))
     for i in range(num_bl_sheets):
         chunk = broken_link_rows[i * rows_per_sht : (i + 1) * rows_per_sht]
         title = f"Broken links {i+1}" if i > 0 else "Broken links"
         make_data_sheet(wb, title, chunk, is_first=(i == 0))
+
+    # ── Blocked by bot protection — external 401/403/429. Kept out of
+    #    "Broken links" because most of these load fine in a browser; the
+    #    site is just refusing the crawler. Verify by hand, don't "fix".
+    blocked_rows = [r for r in link_rows if is_bot_blocked(r)]
+    num_bb_sheets = max(1, -(-len(blocked_rows) // rows_per_sht))
+    for i in range(num_bb_sheets):
+        chunk = blocked_rows[i * rows_per_sht : (i + 1) * rows_per_sht]
+        title = ("Blocked by bot protection" if i == 0
+                 else f"Blocked by bot protection {i+1}")
+        make_data_sheet(wb, title, chunk, is_first=False)
 
     # ── Sheet 2: All broken links — every non-200 row (broken, errors,
     #    redirects), unfiltered. Keeps the full picture one tab over.
@@ -1770,6 +1802,8 @@ def write_excel(
         ("4xx Errors", c4xx_total),
         ("Server Errors (5xx)", c5xx_total),
         ("Timeouts / Conn Errors", timeout_total),
+        ("External blocked by bot protection (401/403/429, included in 4xx)",
+         len(blocked_rows)),
     ]
     for label, value in detail_rows:
         c = ws2.cell(row=ri2, column=1, value=label)
@@ -2744,6 +2778,48 @@ def upload_reports(output_dir: Path, bucket: str, prefix: str, s3=None) -> list[
     return keys
 
 
+_XLSX_MIME  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+
+def drive_upload_configured(credentials_json: str, folder_id: str) -> bool:
+    """False (skip quietly) while the credential is unset or the "{}"
+    placeholder. A real credential with no folder id is a misconfiguration
+    and fails loudly instead of silently never uploading."""
+    creds = (credentials_json or "").strip()
+    if not creds or json.loads(creds) == {}:
+        return False
+    if not folder_id:
+        raise ValueError("GOOGLE_DRIVE_CREDENTIALS is set but "
+                         "GOOGLE_DRIVE_FOLDER_ID is empty")
+    return True
+
+
+def upload_sheet_to_drive(
+    xlsx_path: str, name: str, folder_id: str, credentials_json: str,
+    service=None,
+) -> str:
+    """Upload xlsx_path into the Drive folder and convert it to a native
+    Google Sheet. Returns the link to the new Sheet. `service` is injectable
+    for tests."""
+    if service is None:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(credentials_json),
+            scopes=["https://www.googleapis.com/auth/drive.file"],
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    from googleapiclient.http import MediaFileUpload
+    media = MediaFileUpload(xlsx_path, mimetype=_XLSX_MIME, resumable=True)
+    created = service.files().create(
+        body={"name": name, "parents": [folder_id], "mimeType": _SHEET_MIME},
+        media_body=media, fields="id,webViewLink", supportsAllDrives=True,
+    ).execute()
+    log.info("Uploaded Google Sheet '%s' → %s", name, created.get("webViewLink"))
+    return created.get("webViewLink") or created.get("id", "")
+
+
 async def main() -> None:
     start_time = time.time()
     start_dt   = now_est().strftime("%Y-%m-%d %H:%M:%S")
@@ -2929,6 +3005,23 @@ async def main() -> None:
     if CONFIG["REPORT_BUCKET"]:
         upload_reports(output_dir, CONFIG["REPORT_BUCKET"], f"{safe_lbl or 'unlabeled'}/{ts_tag}")
 
+    # Runs after S3 so the report is safely stored even if Drive fails. A
+    # Drive failure is raised at the very end so the task exits non-zero.
+    drive_error = None
+    try:
+        if (os.path.exists(xlsx_path) and drive_upload_configured(
+                CONFIG["GOOGLE_DRIVE_CREDENTIALS"], CONFIG["GOOGLE_DRIVE_FOLDER_ID"])):
+            site = label or urlparse(CONFIG["BASE_URL"]).netloc
+            upload_sheet_to_drive(
+                xlsx_path, f"Broken Link Report - {site} - {run_date[:10]}",
+                CONFIG["GOOGLE_DRIVE_FOLDER_ID"], CONFIG["GOOGLE_DRIVE_CREDENTIALS"],
+            )
+        else:
+            log.info("Google Drive upload skipped (not configured).")
+    except Exception as exc:
+        drive_error = exc
+        log.error("Google Drive upload failed: %s", exc)
+
     # ── Terminal summary ──
     broken      = sum(1 for r in results if str(r["status"]) in ("404","410","451"))
     ok_cnt      = sum(1 for r in results if str(r["status"]) == "200")
@@ -2968,6 +3061,9 @@ async def main() -> None:
               f"double-clickable file. May take a few seconds to open.)")
         print(f"     Then open http://localhost:8088")
     print(f"{'─'*62}\n")
+
+    if drive_error:
+        raise SystemExit(f"Google Drive upload failed: {drive_error}")
 
 
 # ─────────────────────────────────────────────────────────────

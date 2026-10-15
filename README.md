@@ -61,6 +61,19 @@ docker run --rm \
 - **Upload:** with `REPORT_BUCKET` set, every file in `OUTPUT_DIR` is uploaded to
   `s3://$REPORT_BUCKET/<SCAN_LABEL>/<timestamp>/` after the reports are written.
   Unset for local runs. A failed upload fails the task.
+- **Google Sheet:** with `GOOGLE_DRIVE_CREDENTIALS` (service-account key JSON,
+  injected from Secrets Manager) and `GOOGLE_DRIVE_FOLDER_ID` set, the `.xlsx` is
+  also uploaded to that Drive folder and converted to a native Google Sheet, so
+  cells can be commented on and people @-tagged. It runs after the S3 upload, so
+  the report is stored even if Drive fails; a Drive failure then fails the task.
+  An empty or `{}` credential (the placeholder) skips it. Use a Shared Drive or
+  a folder shared with the service account's email. Google Sheets caps a file at
+  10 million cells, so a very large crawl may not convert.
+- **Report tabs:** `Broken links` lists 4xx on internal links and on external
+  links that really are gone. External 401/403/429 go to `Blocked by bot
+  protection` instead: most of those open fine in a browser, the target site
+  (Cloudflare, Akamai) is just refusing the crawler, so verify by hand.
+  `All broken links` still holds every non-200 row.
 
 ## AWS
 

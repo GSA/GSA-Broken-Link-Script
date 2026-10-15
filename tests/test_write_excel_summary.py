@@ -163,7 +163,8 @@ def test_sheet_order_is_broken_links_then_all_broken_links(tmp_path):
     crawler.write_excel(_sample_results(), path)
     wb = openpyxl.load_workbook(path)
     assert wb.sheetnames[0] == "Broken links"
-    assert wb.sheetnames[1] == "All broken links"
+    assert wb.sheetnames[1] == "Blocked by bot protection"
+    assert wb.sheetnames[2] == "All broken links"
 
 
 def test_broken_links_sheet_has_4xx_internal_external_only(tmp_path):
@@ -174,7 +175,7 @@ def test_broken_links_sheet_has_4xx_internal_external_only(tmp_path):
     path = str(tmp_path / "report.xlsx")
     results = [
         _row("http://example.com/", "Internal", "404"),
-        _row("http://example.com/", "External", "403"),
+        _row("http://example.com/", "External", "410"),
         _row("http://example.com/", "Page", "404"),
         _row("http://example.com/", "Internal", "500"),
         _row("http://example.com/", "Internal", "Timeout"),
@@ -185,7 +186,7 @@ def test_broken_links_sheet_has_4xx_internal_external_only(tmp_path):
     wb = openpyxl.load_workbook(path)
     ws = wb["Broken links"]
     statuses = [ws.cell(row=r, column=5).value for r in range(2, ws.max_row + 1)]
-    assert sorted(statuses) == ["403", "404"]
+    assert sorted(statuses) == ["404", "410"]
 
 
 def test_broken_links_sheet_has_autofilter_on_header_row(tmp_path):
@@ -264,7 +265,8 @@ def test_sheet_order_includes_broken_images_between_all_broken_links_and_broken_
     crawler.write_excel(results, path)
     wb = openpyxl.load_workbook(path)
     assert wb.sheetnames == [
-        "Broken links", "All broken links", "Broken images", "Broken by Page", "Summary",
+        "Broken links", "Blocked by bot protection", "All broken links",
+        "Broken images", "Broken by Page", "Summary",
     ]
 
 
