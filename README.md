@@ -55,20 +55,17 @@ docker run --rm \
   and live files would collide): give each task its own volume/path, or set
   `OUTPUT_DIR` per site (e.g. `/output/bravent`).
 - **Logs:** stdout/stderr, unbuffered, so they stream to CloudWatch Logs as-is.
-- **Exit code:** the crawler exits 0 even when the site is unreachable (it still
-  writes a report), so ECS shows that task as successful. Don't rely on the exit
-  code alone to detect a failed run.
+- **Exit code:** exits 0 after a normal run, including one that finds broken
+  links. It exits 1 when no crawled page answers 2xx (site unreachable or
+  `BASE_URL` wrong; the report is still written and uploaded first), and when
+  the S3 upload fails, so ECS marks those tasks
+  failed and a failure alert can key off the non-zero exit code.
 - **Upload:** with `REPORT_BUCKET` set, every file in `OUTPUT_DIR` is uploaded to
   `s3://$REPORT_BUCKET/<SCAN_LABEL>/<timestamp>/` after the reports are written.
   Unset for local runs. A failed upload fails the task.
-- **Google Sheet:** with `GOOGLE_DRIVE_CREDENTIALS` (service-account key JSON,
-  injected from Secrets Manager) and `GOOGLE_DRIVE_FOLDER_ID` set, the `.xlsx` is
-  also uploaded to that Drive folder and converted to a native Google Sheet, so
-  cells can be commented on and people @-tagged. It runs after the S3 upload, so
-  the report is stored even if Drive fails; a Drive failure then fails the task.
-  An empty or `{}` credential (the placeholder) skips it. Use a Shared Drive or
-  a folder shared with the service account's email. Google Sheets caps a file at
-  10 million cells, so a very large crawl may not convert.
+- **Google Drive:** not used (reports go to S3 only). The upload code is kept
+  commented out in `crawler.py` for possible future use; the working version is
+  in git history (commit `c795e57`).
 - **Report tabs:** `Broken links` lists 4xx on internal links and on external
   links that really are gone. External 401/403/429 go to `Blocked by bot
   protection` instead: most of those open fine in a browser, the target site
@@ -91,6 +88,5 @@ start a crawl straight away. The workflow needs `AWS_ACCESS_KEY_ID_DEV` /
 
 ## Status
 
-Being moved to a monthly ECS Fargate run in dev, with reports in S3. Still to
-do: Google Drive upload, a separate tab for bot-blocked links (401/403/429),
-and failure alerting.
+Monthly ECS Fargate run in dev, with reports in S3. The bot-blocked tab
+(401/403/429) is built. Still to do: failure alerting on the AWS side.

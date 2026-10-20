@@ -3,5 +3,5 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 openpyxl>=3.1.0
 boto3>=1.34.0
-google-api-python-client>=2.100.0
-google-auth>=2.23.0
+# google-api-python-client>=2.100.0  (Drive upload, disabled)
+# google-auth>=2.23.0                 (Drive upload, disabled)

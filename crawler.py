@@ -186,13 +186,10 @@ CONFIG: dict = {
     # Unset (the default) for local runs.
     "REPORT_BUCKET": os.getenv("REPORT_BUCKET", ""),
 
-    # When both are set, the .xlsx is also uploaded to this Google Drive folder
-    # and converted to a native Google Sheet (so cells can be commented on and
-    # people @-tagged). GOOGLE_DRIVE_CREDENTIALS is the service-account key
-    # JSON (ECS injects it from Secrets Manager); an empty value or the "{}"
-    # placeholder means "not configured yet" and the upload is skipped.
-    "GOOGLE_DRIVE_CREDENTIALS": os.getenv("GOOGLE_DRIVE_CREDENTIALS", ""),
-    "GOOGLE_DRIVE_FOLDER_ID":   os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""),
+    # Google Drive upload is disabled (reports go to S3 only). To re-enable,
+    # see the note in main() and uncomment these two keys.
+    # "GOOGLE_DRIVE_CREDENTIALS": os.getenv("GOOGLE_DRIVE_CREDENTIALS", ""),
+    # "GOOGLE_DRIVE_FOLDER_ID":   os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""),
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -2778,46 +2775,60 @@ def upload_reports(output_dir: Path, bucket: str, prefix: str, s3=None) -> list[
     return keys
 
 
-_XLSX_MIME  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+# ── Google Drive upload (disabled, kept for possible future use) ──
+# Uploads the .xlsx to a Drive folder and converts it to a native Google
+# Sheet. Not called from main() right now; see the note there to re-enable.
+
+# _XLSX_MIME  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# _SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+#
+#
+# def drive_upload_configured(credentials_json: str, folder_id: str) -> bool:
+#     """False (skip quietly) while the credential is unset or the "{}"
+#     placeholder. A real credential with no folder id is a misconfiguration
+#     and fails loudly instead of silently never uploading."""
+#     creds = (credentials_json or "").strip()
+#     if not creds or json.loads(creds) == {}:
+#         return False
+#     if not folder_id:
+#         raise ValueError("GOOGLE_DRIVE_CREDENTIALS is set but "
+#                          "GOOGLE_DRIVE_FOLDER_ID is empty")
+#     return True
+#
+#
+# def upload_sheet_to_drive(
+#     xlsx_path: str, name: str, folder_id: str, credentials_json: str,
+#     service=None,
+# ) -> str:
+#     """Upload xlsx_path into the Drive folder and convert it to a native
+#     Google Sheet. Returns the link to the new Sheet. `service` is injectable
+#     for tests."""
+#     if service is None:
+#         from google.oauth2 import service_account
+#         from googleapiclient.discovery import build
+#         creds = service_account.Credentials.from_service_account_info(
+#             json.loads(credentials_json),
+#             scopes=["https://www.googleapis.com/auth/drive.file"],
+#         )
+#         service = build("drive", "v3", credentials=creds, cache_discovery=False)
+#     from googleapiclient.http import MediaFileUpload
+#     media = MediaFileUpload(xlsx_path, mimetype=_XLSX_MIME, resumable=True)
+#     created = service.files().create(
+#         body={"name": name, "parents": [folder_id], "mimeType": _SHEET_MIME},
+#         media_body=media, fields="id,webViewLink", supportsAllDrives=True,
+#     ).execute()
+#     log.info("Uploaded Google Sheet '%s' → %s", name, created.get("webViewLink"))
+#     return created.get("webViewLink") or created.get("id", "")
 
 
-def drive_upload_configured(credentials_json: str, folder_id: str) -> bool:
-    """False (skip quietly) while the credential is unset or the "{}"
-    placeholder. A real credential with no folder id is a misconfiguration
-    and fails loudly instead of silently never uploading."""
-    creds = (credentials_json or "").strip()
-    if not creds or json.loads(creds) == {}:
-        return False
-    if not folder_id:
-        raise ValueError("GOOGLE_DRIVE_CREDENTIALS is set but "
-                         "GOOGLE_DRIVE_FOLDER_ID is empty")
-    return True
-
-
-def upload_sheet_to_drive(
-    xlsx_path: str, name: str, folder_id: str, credentials_json: str,
-    service=None,
-) -> str:
-    """Upload xlsx_path into the Drive folder and convert it to a native
-    Google Sheet. Returns the link to the new Sheet. `service` is injectable
-    for tests."""
-    if service is None:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(credentials_json),
-            scopes=["https://www.googleapis.com/auth/drive.file"],
-        )
-        service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    from googleapiclient.http import MediaFileUpload
-    media = MediaFileUpload(xlsx_path, mimetype=_XLSX_MIME, resumable=True)
-    created = service.files().create(
-        body={"name": name, "parents": [folder_id], "mimeType": _SHEET_MIME},
-        media_body=media, fields="id,webViewLink", supportsAllDrives=True,
-    ).execute()
-    log.info("Uploaded Google Sheet '%s' → %s", name, created.get("webViewLink"))
-    return created.get("webViewLink") or created.get("id", "")
+def crawl_failed(results: list) -> bool:
+    """True when not a single crawled page answered 2xx, i.e. the site was
+    unreachable or the start URL is wrong. A normal run that merely finds
+    broken links is not a failure."""
+    return not any(
+        r.get("link_type") == "Page" and str(r.get("status", "")).startswith("2")
+        for r in results
+    )
 
 
 async def main() -> None:
@@ -2851,8 +2862,10 @@ async def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not results:
-        log.warning("No results collected. Check BASE_URL and network access.")
-        return
+        # Exit non-zero so ECS marks the task failed (and the failure alert
+        # fires) instead of an unreachable site looking like a clean run.
+        log.error("No results collected. Check BASE_URL and network access.")
+        raise SystemExit("No results collected. Check BASE_URL and network access.")
 
     elapsed  = time.time() - start_time
     run_date = now_est().strftime("%Y-%m-%d %H:%M:%S")
@@ -3005,22 +3018,26 @@ async def main() -> None:
     if CONFIG["REPORT_BUCKET"]:
         upload_reports(output_dir, CONFIG["REPORT_BUCKET"], f"{safe_lbl or 'unlabeled'}/{ts_tag}")
 
+    # Google Drive upload is switched off (decision: reports go to S3 only).
+    # To bring it back, uncomment this block, the Drive helpers above main(),
+    # the two GOOGLE_DRIVE_* CONFIG keys, the `if drive_error:` raise at the
+    # end of main(), and the google-* lines in requirements.txt.
     # Runs after S3 so the report is safely stored even if Drive fails. A
     # Drive failure is raised at the very end so the task exits non-zero.
-    drive_error = None
-    try:
-        if (os.path.exists(xlsx_path) and drive_upload_configured(
-                CONFIG["GOOGLE_DRIVE_CREDENTIALS"], CONFIG["GOOGLE_DRIVE_FOLDER_ID"])):
-            site = label or urlparse(CONFIG["BASE_URL"]).netloc
-            upload_sheet_to_drive(
-                xlsx_path, f"Broken Link Report - {site} - {run_date[:10]}",
-                CONFIG["GOOGLE_DRIVE_FOLDER_ID"], CONFIG["GOOGLE_DRIVE_CREDENTIALS"],
-            )
-        else:
-            log.info("Google Drive upload skipped (not configured).")
-    except Exception as exc:
-        drive_error = exc
-        log.error("Google Drive upload failed: %s", exc)
+    # drive_error = None
+    # try:
+    #     if (os.path.exists(xlsx_path) and drive_upload_configured(
+    #             CONFIG["GOOGLE_DRIVE_CREDENTIALS"], CONFIG["GOOGLE_DRIVE_FOLDER_ID"])):
+    #         site = label or urlparse(CONFIG["BASE_URL"]).netloc
+    #         upload_sheet_to_drive(
+    #             xlsx_path, f"Broken Link Report - {site} - {run_date[:10]}",
+    #             CONFIG["GOOGLE_DRIVE_FOLDER_ID"], CONFIG["GOOGLE_DRIVE_CREDENTIALS"],
+    #         )
+    #     else:
+    #         log.info("Google Drive upload skipped (not configured).")
+    # except Exception as exc:
+    #     drive_error = exc
+    #     log.error("Google Drive upload failed: %s", exc)
 
     # ── Terminal summary ──
     broken      = sum(1 for r in results if str(r["status"]) in ("404","410","451"))
@@ -3062,8 +3079,14 @@ async def main() -> None:
         print(f"     Then open http://localhost:8088")
     print(f"{'─'*62}\n")
 
-    if drive_error:
-        raise SystemExit(f"Google Drive upload failed: {drive_error}")
+    # if drive_error:
+    #     raise SystemExit(f"Google Drive upload failed: {drive_error}")
+
+    # Raised last, after the report is written and uploaded, so the evidence is
+    # kept. Non-zero exit makes ECS mark the task failed and fires the alert.
+    if crawl_failed(results):
+        raise SystemExit("Crawl failed: no page returned a successful response. "
+                         "Check BASE_URL and network access.")
 
 
 # ─────────────────────────────────────────────────────────────
