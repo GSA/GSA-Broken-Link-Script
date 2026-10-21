@@ -37,8 +37,8 @@ site by overriding them per target.
 ```bash
 docker build -t broken-link-crawler .
 docker run --rm \
-  -e BASE_URL="https://bravent.us/" -e MAX_PAGES=30 -e MAX_DEPTH=2 \
-  -e SCAN_LABEL="bravent" \
+  -e BASE_URL="https://www.acquisition.gov/" -e MAX_PAGES=30 -e MAX_DEPTH=2 \
+  -e SCAN_LABEL="acquisition-gov" \
   -v "$PWD/out:/output" \
   broken-link-crawler
 ```
@@ -53,7 +53,7 @@ docker run --rm \
   name), `skipped_urls.html`, and `live_results.jsonl` / `live_status.json`.
   Two sites running at once must not share one `/output` (the fixed `index.html`
   and live files would collide): give each task its own volume/path, or set
-  `OUTPUT_DIR` per site (e.g. `/output/bravent`).
+  `OUTPUT_DIR` per site (e.g. `/output/acquisition-gov`).
 - **Logs:** stdout/stderr, unbuffered, so they stream to CloudWatch Logs as-is.
 - **Exit code:** exits 0 after a normal run, including one that finds broken
   links. It exits 1 when no crawled page answers 2xx (site unreachable or
