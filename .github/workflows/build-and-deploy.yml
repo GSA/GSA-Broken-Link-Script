@@ -25,7 +25,19 @@ on:
         description: 'Site to crawl (with run_now)'
         required: false
       scan_label:
-        description: 'Report label (with run_now)'
+        description: 'Report label (with run_now). Use a test label for trial runs so they stay apart from the real reports in S3'
+        required: false
+      max_pages:
+        description: 'Stop after this many pages, then write the report (with run_now). Blank = scheduled-run default. 0 = unlimited'
+        required: false
+      max_depth:
+        description: 'Link depth from the start page (with run_now). Blank = scheduled-run default'
+        required: false
+      concurrency:
+        description: 'Requests at a time (with run_now). Blank = scheduled-run default. Slow = 1, fast = 6'
+        required: false
+      polite_delay:
+        description: 'Seconds to wait between requests (with run_now). Blank = scheduled-run default. Slow = 3, fast = 0.5'
         required: false
       no_cache:
         description: 'Bypass Docker layer cache (use after security fixes)'
@@ -99,6 +111,10 @@ jobs:
       env:
         BASE_URL: ${{ github.event.inputs.base_url }}
         SCAN_LABEL: ${{ github.event.inputs.scan_label }}
+        MAX_PAGES: ${{ github.event.inputs.max_pages }}
+        MAX_DEPTH: ${{ github.event.inputs.max_depth }}
+        CONCURRENCY: ${{ github.event.inputs.concurrency }}
+        POLITE_DELAY: ${{ github.event.inputs.polite_delay }}
       run: |
         if [ -z "${BASE_URL}" ]; then
           echo "::error::run_now needs base_url"
@@ -109,12 +125,29 @@ jobs:
         CLUSTER=$(jq -r .cluster <<<"${PARAM}")
         CONTAINER=$(jq -r .container <<<"${PARAM}")
 
-        OVERRIDES=$(jq -n --arg c "${CONTAINER}" --arg u "${BASE_URL}" --arg l "${SCAN_LABEL}" '{
-          containerOverrides: [{
-            name: $c,
-            environment: [{name: "BASE_URL", value: $u}, {name: "SCAN_LABEL", value: $l}]
-          }]
-        }')
+        # Only BASE_URL and SCAN_LABEL are always overridden. A crawl setting is
+        # overridden only when it is filled in; blank keeps the value from the
+        # task definition, i.e. what the scheduled run uses.
+        OVERRIDE_ENV=$(jq -nc --arg u "${BASE_URL}" --arg l "${SCAN_LABEL}" \
+          '[{name: "BASE_URL", value: $u}, {name: "SCAN_LABEL", value: $l}]')
+        add_setting() {
+          local name="$1" value="$2" pattern="$3"
+          [ -z "${value}" ] && return 0
+          if ! [[ "${value}" =~ ${pattern} ]]; then
+            echo "::error::${name} must be a number (got '${value}')"
+            exit 1
+          fi
+          OVERRIDE_ENV=$(jq -c --arg n "${name}" --arg v "${value}" \
+            '. + [{name: $n, value: $v}]' <<<"${OVERRIDE_ENV}")
+        }
+        add_setting MAX_PAGES    "${MAX_PAGES}"    '^[0-9]+$'
+        add_setting MAX_DEPTH    "${MAX_DEPTH}"    '^[0-9]+$'
+        add_setting CONCURRENCY  "${CONCURRENCY}"  '^[1-9][0-9]*$'
+        add_setting POLITE_DELAY "${POLITE_DELAY}" '^[0-9]+(\.[0-9]+)?$'
+
+        OVERRIDES=$(jq -nc --arg c "${CONTAINER}" --argjson env "${OVERRIDE_ENV}" \
+          '{containerOverrides: [{name: $c, environment: $env}]}')
+        echo "Overrides: ${OVERRIDES}"
 
         TASK_ARN=$(aws ecs run-task \
           --cluster "${CLUSTER}" \

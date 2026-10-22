@@ -83,7 +83,11 @@ EventBridge Scheduler schedules (one per site, 1st of the month) live in
 **Actions → Build, Push and Run Crawler** runs the tests, then pushes the
 image to ECR as `:<tag>` and `:latest`. Scheduled tasks always pull `:latest`,
 so the next monthly run picks up the new image. Tick `run_now` with a `base_url` to
-start a crawl straight away. The workflow needs `AWS_ACCESS_KEY_ID_DEV` /
+start a crawl straight away. For a trial run, the optional `max_pages`,
+`max_depth`, `concurrency` and `polite_delay` inputs override the scheduled-run
+values for that one run; blank keeps the scheduled value (slow: `concurrency` 1,
+`polite_delay` 3; fast: 6 and 0.5). Use a test `scan_label` so trial reports
+stay apart from the real ones in S3. The workflow needs `AWS_ACCESS_KEY_ID_DEV` /
 `AWS_SECRET_ACCESS_KEY_DEV` repository secrets.
 
 ## Status
