@@ -19,12 +19,15 @@ Quick start
 import asyncio
 import aiohttp
 import csv
+import gzip
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import sys
+import tempfile
 import time
 import logging
 from collections import deque, Counter
@@ -2761,16 +2764,48 @@ def _row_class(status) -> str:
     return "unkn"
 
 
+def _skip_upload(name: str) -> bool:
+    """Files that only repeat data another uploaded file already holds."""
+    return (
+        name == "live_results.jsonl"      # working log; every row is in the CSV
+        or name.startswith("report_data_")  # the HTML embeds the same rows
+        or (name.startswith("report_") and name.endswith(".html"))  # same bytes as index.html
+    )
+
+
 def upload_reports(output_dir: Path, bucket: str, prefix: str, s3=None) -> list[str]:
-    """Upload every file in output_dir to s3://bucket/prefix/ and return the keys."""
+    """Upload the report files in output_dir to s3://bucket/prefix/ and return
+    the keys.
+
+    Nothing is lost to keep the upload small: duplicates are skipped (see
+    _skip_upload), the CSV is stored gzipped as <name>.csv.gz, and HTML pages
+    are gzipped with Content-Encoding so a browser still opens them directly.
+    """
     if s3 is None:
         import boto3
         s3 = boto3.client("s3")
     keys = []
-    for path in sorted(p for p in output_dir.rglob("*") if p.is_file()):
-        key = f"{prefix}/{path.relative_to(output_dir).as_posix()}"
-        s3.upload_file(str(path), bucket, key)
-        keys.append(key)
+    with tempfile.TemporaryDirectory() as tmp:
+        for path in sorted(p for p in output_dir.rglob("*") if p.is_file()):
+            if _skip_upload(path.name):
+                continue
+            key = f"{prefix}/{path.relative_to(output_dir).as_posix()}"
+            src, extra = path, None
+            if path.suffix in (".csv", ".html"):
+                src = Path(tmp) / (path.name + (".gz" if path.suffix == ".csv" else ""))
+                with open(path, "rb") as fin, gzip.open(src, "wb") as fout:
+                    shutil.copyfileobj(fin, fout)
+                if path.suffix == ".csv":
+                    key += ".gz"
+                    extra = {"ContentType": "application/gzip"}
+                else:
+                    extra = {"ContentType": "text/html; charset=utf-8",
+                             "ContentEncoding": "gzip"}
+            if extra:
+                s3.upload_file(str(src), bucket, key, ExtraArgs=extra)
+            else:
+                s3.upload_file(str(src), bucket, key)
+            keys.append(key)
     log.info("Uploaded %d file(s) → s3://%s/%s/", len(keys), bucket, prefix)
     return keys
 

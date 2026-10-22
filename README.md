@@ -60,9 +60,14 @@ docker run --rm \
   `BASE_URL` wrong; the report is still written and uploaded first), and when
   the S3 upload fails, so ECS marks those tasks
   failed and a failure alert can key off the non-zero exit code.
-- **Upload:** with `REPORT_BUCKET` set, every file in `OUTPUT_DIR` is uploaded to
-  `s3://$REPORT_BUCKET/<SCAN_LABEL>/<timestamp>/` after the reports are written.
-  Unset for local runs. A failed upload fails the task.
+- **Upload:** with `REPORT_BUCKET` set, the report files in `OUTPUT_DIR` are
+  uploaded to `s3://$REPORT_BUCKET/<SCAN_LABEL>/<timestamp>/` after the reports are
+  written. Unset for local runs. A failed upload fails the task. To keep a full
+  acquisition.gov run near 25 MB instead of about 1 GB, nothing is dropped except
+  copies: the CSV is stored as `.csv.gz`, HTML pages are gzipped (browsers still
+  open them directly), and three duplicates stay local only (`live_results.jsonl`,
+  `report_data_*.json`, and the timestamped `report_*.html`, which has the same
+  content as `index.html`).
 - **Google Drive:** not used (reports go to S3 only). The upload code is kept
   commented out in `crawler.py` for possible future use; the working version is
   in git history (commit `c795e57`).
