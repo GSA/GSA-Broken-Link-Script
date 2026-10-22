@@ -18,26 +18,26 @@ on:
         description: 'ECR image tag (defaults to the short commit SHA)'
         required: false
       run_now:
-        description: 'Start a crawl after pushing'
+        description: 'Start a crawl after pushing. Tick this, or the crawl fields below are ignored'
         type: boolean
         default: false
       base_url:
-        description: 'Site to crawl (with run_now)'
+        description: 'Site to crawl (with run_now). Required, e.g. https://www.acquisition.gov/'
         required: false
       scan_label:
-        description: 'Report label (with run_now). Use a test label for trial runs so they stay apart from the real reports in S3'
+        description: 'Folder name for the report in S3 (with run_now), e.g. acquisition-gov. Use a test label such as acquisition-gov-test for trial runs so they stay apart from the real reports'
         required: false
       max_pages:
         description: 'Stop after this many pages, then write the report (with run_now). Enter 0 to crawl the WHOLE site (no limit). Blank = scheduled-run default'
         required: false
       max_depth:
-        description: 'Link depth from the start page (with run_now). Blank = scheduled-run default'
+        description: 'How many clicks deep from the start page to follow links (with run_now). 10 covers the whole site, 2 is a quick shallow check. Blank = scheduled-run default'
         required: false
       concurrency:
-        description: 'Requests at a time (with run_now). Blank = scheduled-run default. Slow = 1, fast = 6'
+        description: 'How many requests run at the same time (with run_now). 2 = slow and gentle, 5 = balanced, 10 = fast (more risk of 403/429 blocks). Blank = scheduled-run default'
         required: false
       polite_delay:
-        description: 'Seconds to wait between requests (with run_now). Blank = scheduled-run default. Slow = 3, fast = 0.5'
+        description: 'Seconds to pause after each batch of pages (with run_now). 0.3 = fast, 0.5 = balanced, 2 = slow and gentle. Blank = scheduled-run default'
         required: false
       no_cache:
         description: 'Bypass Docker layer cache (use after security fixes)'
