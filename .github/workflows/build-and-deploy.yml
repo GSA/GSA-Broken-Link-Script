@@ -28,7 +28,7 @@ on:
         description: 'Report label (with run_now). Use a test label for trial runs so they stay apart from the real reports in S3'
         required: false
       max_pages:
-        description: 'Stop after this many pages, then write the report (with run_now). Blank = scheduled-run default. 0 = unlimited'
+        description: 'Stop after this many pages, then write the report (with run_now). Enter 0 to crawl the WHOLE site (no limit). Blank = scheduled-run default'
         required: false
       max_depth:
         description: 'Link depth from the start page (with run_now). Blank = scheduled-run default'
